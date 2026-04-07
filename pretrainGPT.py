@@ -53,7 +53,7 @@ from typing import Optional, List
 # ── Hugging Face ──────────────────────────────────────────────────────────────
 HF_DATASET_REPO = "silyan/data_PoC"          # repo public (données)
 HF_MODEL_REPO   = "silyan/data_PoC"          # même repo pour le modèle
-HF_TOKEN        = "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"  # token temporaire
+HF_TOKEN        = "ARGS.HF_token"  # token temporaire
 HF_TIMED_SAVE_EVERY_MIN = 50                 # sauvegarde + push toutes les N minutes
 
 torch.set_float32_matmul_precision('high')
@@ -235,6 +235,7 @@ def get_args():
                    help='Activer le graph scaling Naylis Attention (défaut: True)')
     p.add_argument('--no_graph',     action='store_true',
                    help='Désactiver le graph scaling Naylis (transformer classique)')
+    p.add_argument('--HF_token', type=str, default=None)
     return p.parse_args()
 
 ARGS   = get_args()
