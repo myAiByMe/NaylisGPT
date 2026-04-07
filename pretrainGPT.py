@@ -202,7 +202,7 @@ def hf_push_checkpoint(ckpt_path: str, global_step: int):
                 path_or_fileobj = local_f,
                 path_in_repo    = remote_f,
                 repo_id         = HF_MODEL_REPO,
-                repo_type       = "model",
+                repo_type       = "dataset",
                 token           = HF_TOKEN,
                 commit_message  = f"checkpoint step={global_step:,}",
             )
