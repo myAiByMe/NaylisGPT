@@ -20,10 +20,10 @@ SYSTÈME CHUNKS :
   - Save final garanti après le dernier chunk
 
 USAGE :
-  python pretrain.py
-  python pretrain.py --no-compile
-  python pretrain.py --total-steps 45732   # reprise avec scheduler original
-  python pretrain.py --no_graph            # désactive le graph scaling Naylis (transformer classique)
+  python pretrain.py --HF_token hf_xxx
+  python pretrain.py --HF_token hf_xxx --no-compile
+  python pretrain.py --HF_token hf_xxx --total-steps 45732
+  python pretrain.py --HF_token hf_xxx --no_graph
 """
 
 import os
@@ -50,12 +50,35 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 from typing import Optional, List
 
+# ── Args ─────────────────────────────────────────────────────────────────────
+def get_args():
+    p = argparse.ArgumentParser()
+    p.add_argument('--no-compile',   action='store_true')
+    p.add_argument('--compile-mode', default='default',
+                   choices=['default', 'reduce-overhead', 'max-autotune'])
+    p.add_argument('--total-steps',  type=int, default=None,
+                   help='Forcer total_steps du scheduler WSD (reprise mid-training). '
+                        'Ex: --total-steps 45732')
+    p.add_argument('--use_graph',    action='store_true', default=True,
+                   help='Activer le graph scaling Naylis Attention (défaut: True)')
+    p.add_argument('--no_graph',     action='store_true',
+                   help='Désactiver le graph scaling Naylis (transformer classique)')
+    p.add_argument('--HF_token',     type=str, default=None,
+                   help='Token Hugging Face (lecture/écriture). Ex: hf_xxxxxxxx')
+    return p.parse_args()
+
+ARGS   = get_args()
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 # ── Hugging Face ──────────────────────────────────────────────────────────────
-HF_DATASET_REPO = "silyan/data_PoC"          # repo public (données)
-HF_MODEL_REPO   = "silyan/data_PoC"  
-ARGS = get_args()
-HF_TOKEN = ARGS.HF_token
-HF_TIMED_SAVE_EVERY_MIN = 50                 # sauvegarde + push toutes les N minutes
+HF_DATASET_REPO        = "silyan/data_PoC"
+HF_MODEL_REPO          = "silyan/data_PoC"
+HF_TOKEN               = ARGS.HF_token          # ← valeur de l'arg, peut être None
+HF_TIMED_SAVE_EVERY_MIN = 50
+
+if HF_TOKEN is None:
+    print('  ⚠️  Aucun token HF fourni (--HF_token). '
+          'Les repos privés et les pushs seront désactivés.')
 
 torch.set_float32_matmul_precision('high')
 
