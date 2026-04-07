@@ -145,7 +145,7 @@ def hf_check_and_download_checkpoint(ckpt_path: str):
             hf_hub_download(
                 repo_id   = HF_MODEL_REPO,
                 filename  = fname,
-                repo_type = "model",
+                repo_type = "dataset",
                 token     = HF_TOKEN,
                 local_dir = ckpt_dir,
             )
