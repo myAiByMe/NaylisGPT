@@ -53,7 +53,7 @@ from typing import Optional, List
 # ── Hugging Face ──────────────────────────────────────────────────────────────
 HF_DATASET_REPO = "silyan/data_PoC"          # repo public (données)
 HF_MODEL_REPO   = "silyan/data_PoC"          # même repo pour le modèle
-HF_TOKEN        = "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"  # token temporaire
+HF_TOKEN        = "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"  # token temporaire
 HF_TIMED_SAVE_EVERY_MIN = 50                 # sauvegarde + push toutes les N minutes
 
 torch.set_float32_matmul_precision('high')
