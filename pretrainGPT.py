@@ -129,7 +129,7 @@ def hf_check_and_download_checkpoint(ckpt_path: str):
     try:
         remote_files = list(list_repo_files(
             repo_id   = HF_MODEL_REPO,
-            repo_type = "model",
+            repo_type = "dataset",
             token     = HF_TOKEN,
         ))
     except Exception as e:
