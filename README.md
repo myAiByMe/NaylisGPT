@@ -33,7 +33,7 @@ GPT-Naylis est un modèle de langage autorégressif de ~200M paramètres, conçu
 ```
 NaylisGPT
 ├── token_embeddings     [vocab_size × embed_dim]   (weight-tied avec output_head)
-├── NaylisBlock × 18
+├── NaylisBlock × num_layer
 │   ├── ln1              RMSNorm(embed_dim)
 │   ├── attention        NaylisAttention
 │   │   ├── q_proj       [embed_dim → embed_dim]
