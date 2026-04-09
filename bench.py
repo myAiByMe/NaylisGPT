@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-# benchmark.py — Naylis v1  (lm-eval harness)
+# bench2.py — Naylis v1  (lm-eval harness) — VERSION CORRIGÉE
 # Évalue NaylisGPT via lm-evaluation-harness (EleutherAI).
+#
+# Corrections vs bench.py :
+#   1. max_seq_len 512 → 1024  (aligne sur le pretrain, évite troncature few-shot)
+#   2. use_graph = False ajouté dans MODEL_CFG  (évite warnings "clés manquantes")
+#   3. TASKS_ALL séparé par mode  (--tasks all cohérent avec chaque task_map)
 #
 # Install :
 #   pip install lm-eval>=0.4.3
 #
 # Usage :
-#   python benchmark.py --mode sft    [--model ./Model/naylis_sft.pt]
-#   python bench.py --mode pretrain --model ./Model/naylis_pretrain.pt
-#   python benchmark.py --mode pretrain --tasks all --num_fewshot 5  (override global)
-#   python benchmark.py --mode sft --tasks piqa,mmlu --batch_size 4
+#   python bench2.py --mode pretrain --model ./Model/naylis_pretrain.pt
+#   python bench2.py --mode sft      --model ./Model/naylis_sft.pt
+#   python bench2.py --mode pretrain --tasks all --num_fewshot 5
+#   python bench2.py --mode sft      --tasks piqa,mmlu --batch_size 4
 
 import argparse
 import gc
@@ -50,19 +55,20 @@ DEFAULT_MODEL_SFT  = "./Model/naylis_sft.pt"
 DEFAULT_MODEL_PRE  = "./Model/naylis_pretrain.pt"
 
 MODEL_CFG = dict(
-    vocab_size    = None,   # rempli au runtime depuis le tokenizer
-    embed_dim     = 768,
-    num_heads     = 12,
-    num_layers    = 18,
-    max_seq_len   = 512,
-    n_kv_heads    = 4,
-    rel_rank      = 32,
-    use_rope      = True,
-    use_yarn      = False,
-    use_swiglu    = True,
-    use_qk_norm   = True,
-    use_flash_attn= True,
-    dropout       = 0.0,
+    vocab_size     = None,   # rempli au runtime depuis le tokenizer
+    embed_dim      = 768,
+    num_heads      = 12,
+    num_layers     = 18,
+    max_seq_len    = 1024,   # CORRECTION 1 : était 512 → aligne sur le pretrain
+    n_kv_heads     = 4,
+    rel_rank       = 32,
+    use_rope       = True,
+    use_yarn       = False,
+    use_swiglu     = True,
+    use_qk_norm    = True,
+    use_flash_attn = True,
+    dropout        = 0.0,
+    use_graph      = False,  # CORRECTION 2 : manquait → évite warnings "clés manquantes"
 )
 
 # ─────────────────────────────────────────────────────────────
@@ -77,50 +83,53 @@ MODEL_CFG = dict(
 #   WinoGrande  5-shot   (Qwen2/2.5 standard)
 #   PIQA        0-shot   (tâche simple, peu sensible au few-shot)
 #   TriviaQA    0-shot   (open-ended, génération)
+#   nq_open     0-shot   (NaturalQuestions — bench perso)
+#   boolq       0-shot   (bench perso)
+#   lambada_openai 0-shot (bench perso)
 # ─────────────────────────────────────────────────────────────
 
 TASK_MAP_SFT = {
-    "nq_open"       : ("nq_open",         1),   # NaturalQuestions
-    "boolq"         : ("boolq",           0),
-    "lambada_openai": ("lambada_openai",  0),
-    # nom_local      : (nom_lm_eval,      n_shot_sft)
-    "piqa"          : ("piqa",            0),
-    
-    "mmlu"          : ("mmlu",            0),
-    "arc_easy"      : ("arc_easy",        0),
-    "arc_challenge" : ("arc_challenge",   0),
-    "hellaswag"     : ("hellaswag",       0),
-    "winogrande"    : ("winogrande",      0),
-    "triviaqa"      : ("triviaqa",        0),
+    "nq_open"        : ("nq_open",          1),
+    "boolq"          : ("boolq",            0),
+    "lambada_openai" : ("lambada_openai",   0),
+    "piqa"           : ("piqa",             0),
+    "mmlu"           : ("mmlu",             0),
+    "arc_easy"       : ("arc_easy",         0),
+    "arc_challenge"  : ("arc_challenge",    0),
+    "hellaswag"      : ("hellaswag",        0),
+    "winogrande"     : ("winogrande",       0),
+    "triviaqa"       : ("triviaqa",         0),
 }
 
 TASK_MAP_PRETRAIN = {
-    "nq_open"       : ("nq_open",         0),   # NaturalQuestions
-    "boolq"         : ("boolq",           0),
-    "lambada_openai": ("lambada_openai",  0),
-    # nom_local      : (nom_lm_eval,      n_shot_pretrain)
-    "piqa"          : ("piqa",            0),   # tâche simple, 0-shot suffisant   
-    "mmlu"          : ("mmlu",            5),   # standard académique Qwen/Gemma
-    "arc_easy"      : ("arc_easy",        5),   # cohérent arc_challenge
-    "arc_challenge" : ("arc_challenge",  25),   # très sensible, standard Qwen2
-    "hellaswag"     : ("hellaswag",      10),   # standard Qwen2 tech report
-    "winogrande"    : ("winogrande",      5),   # standard Qwen2/2.5/3
-    "triviaqa"      : ("triviaqa",        0),   # open-ended génération
+    "nq_open"        : ("nq_open",          0),
+    "boolq"          : ("boolq",            0),
+    "lambada_openai" : ("lambada_openai",   0),
+    "piqa"           : ("piqa",             0),
+    "mmlu"           : ("mmlu",             5),
+    "arc_easy"       : ("arc_easy",         5),
+    "arc_challenge"  : ("arc_challenge",   25),
+    "hellaswag"      : ("hellaswag",       10),
+    "winogrande"     : ("winogrande",       5),
+    "triviaqa"       : ("triviaqa",         0),
 }
 
-TASKS_ALL = list(TASK_MAP_SFT.keys())  # même liste pour les deux modes
+# CORRECTION 3 : TASKS_ALL séparé par mode
+# → --tasks all liste les bonnes tâches selon le mode sélectionné
+TASKS_ALL_PRETRAIN = list(TASK_MAP_PRETRAIN.keys())
+TASKS_ALL_SFT      = list(TASK_MAP_SFT.keys())
 
 RANDOM_BASELINES = {
-    "piqa"          : 0.50,
-    "triviaqa"      : 0.00,
-    "mmlu"          : 0.25,
-    "arc_easy"      : 0.25,
-    "arc_challenge" : 0.25,
-    "hellaswag"     : 0.25,
-    "winogrande"    : 0.50,
-    "nq_open"       : 0.00,   # open-ended exact match
-    "boolq"         : 0.50,   # binaire oui/non
-    "lambada_openai": 0.00,
+    "piqa"           : 0.50,
+    "triviaqa"       : 0.00,
+    "mmlu"           : 0.25,
+    "arc_easy"       : 0.25,
+    "arc_challenge"  : 0.25,
+    "hellaswag"      : 0.25,
+    "winogrande"     : 0.50,
+    "nq_open"        : 0.00,
+    "boolq"          : 0.50,
+    "lambada_openai" : 0.00,
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -139,7 +148,7 @@ class NaylisLM(LM):
         tokenizer  : AutoTokenizer,
         device     : str,
         batch_size : int = 4,
-        max_seq_len: int = 512,
+        max_seq_len: int = 1024,
     ):
         super().__init__()
         self.model           = model
@@ -308,7 +317,6 @@ class NaylisLM(LM):
                 [token_ids], dtype=torch.long, device=self.device
             )
 
-            # Convertit les stop strings d'1 token en token IDs
             stop_token_ids = []
             for s in until:
                 if not s:
@@ -317,7 +325,6 @@ class NaylisLM(LM):
                 if len(ids) == 1:
                     stop_token_ids.append(ids[0])
 
-            # Fusionne eos + stop tokens → le modèle s'arrête dès le premier
             all_stop_ids = list({self.eot_token_id} | set(stop_token_ids))
 
             output_ids = self.model.generate(
@@ -329,7 +336,6 @@ class NaylisLM(LM):
             gen_tokens = output_ids[0, input_ids.shape[1]:]
             generated  = self.tok_decode(gen_tokens.tolist())
 
-            # Post-processing stops multi-tokens
             for stop in until:
                 if stop and stop in generated:
                     generated = generated[:generated.index(stop)]
@@ -345,19 +351,15 @@ class NaylisLM(LM):
 def load_tokenizer(mode: str) -> AutoTokenizer:
     """
     Charge le tokenizer adapté au mode.
-    - pretrain : tokenizer GNT local si dispo, sinon cosmo2-tokenizer de base
-                 (pas de tokens ChatML — le modèle n'en a pas vu)
+    - pretrain : cosmo2-tokenizer de base (pas de tokens ChatML)
     - sft      : cosmo2-tokenizer + ajout tokens ChatML si absents
     """
     print(f"  Tokenizer : {TOKENIZER_ID}  [mode={mode}]")
     tok = AutoTokenizer.from_pretrained(TOKENIZER_ID)
 
     if mode == "pretrain":
-        # En pretrain, on n'ajoute PAS les tokens ChatML :
-        # le modèle brut ne les a jamais vus → pas de resize nécessaire.
         print("  ℹ️  Mode pretrain — tokens ChatML non ajoutés")
     else:
-        # Mode SFT : restaure les tokens ChatML si le fine-tune les a ajoutés
         im_start_id = tok.convert_tokens_to_ids("<|im_start|>")
         if im_start_id == tok.unk_token_id:
             tok.add_special_tokens({
@@ -376,10 +378,8 @@ def load_model(model_path: str, device: str) -> NaylisGPT:
 
     ckpt  = torch.load(model_path, map_location="cpu", weights_only=True)
     state = ckpt.get("model_state_dict", ckpt)
-    # Supprime le préfixe _orig_mod. généré par torch.compile
     state = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
 
-    # Resize si le checkpoint a un vocab différent (ex : tokens ChatML ajoutés au SFT)
     emb_w = state.get("token_embeddings.weight")
     if emb_w is not None and emb_w.shape[0] != MODEL_CFG["vocab_size"]:
         ckpt_v = emb_w.shape[0]
@@ -421,60 +421,57 @@ def main():
                         help="cuda / cpu / auto")
     args = parser.parse_args()
 
-    # ── Valeurs par défaut selon le mode ──────────────────────
     if args.model is None:
         args.model = DEFAULT_MODEL_PRE if args.mode == "pretrain" else DEFAULT_MODEL_SFT
     if args.output is None:
         args.output = f"./benchmark_{args.mode}_results.json"
 
-    # Sélection de la task map selon le mode
     task_map = TASK_MAP_PRETRAIN if args.mode == "pretrain" else TASK_MAP_SFT
 
-    # ── Device ────────────────────────────────────────────────
+    # CORRECTION 3 : TASKS_ALL selon le mode
+    tasks_all = TASKS_ALL_PRETRAIN if args.mode == "pretrain" else TASKS_ALL_SFT
+
     if args.device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     else:
         device = args.device
 
-    # ── Header ────────────────────────────────────────────────
     mode_label = "PRETRAIN  [few-shot industrie]" if args.mode == "pretrain" else "SFT  [0-shot]"
     print("\n" + "="*65)
     print(f"  Naylis v1 — Benchmark Suite  [{mode_label}]")
     print("="*65)
-    print(f"  Device : {device}")
+    print(f"  Device      : {device}")
     if device == "cuda":
-        print(f"  GPU    : {torch.cuda.get_device_name(0)}")
+        print(f"  GPU         : {torch.cuda.get_device_name(0)}")
         vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        print(f"  VRAM   : {vram:.1f} GB")
-    print(f"  Modèle : {args.model}")
+        print(f"  VRAM        : {vram:.1f} GB")
+    print(f"  Modèle      : {args.model}")
+    print(f"  max_seq_len : {MODEL_CFG['max_seq_len']}")
+    print(f"  use_graph   : {MODEL_CFG['use_graph']}")
 
-    # ── Tâches ────────────────────────────────────────────────
     if args.tasks.strip().lower() == "all":
-        task_keys = TASKS_ALL
+        task_keys = tasks_all
     else:
         task_keys = [t.strip().lower() for t in args.tasks.split(",")]
         invalid = [t for t in task_keys if t not in task_map]
         if invalid:
             print(f"  ❌ Tâches inconnues : {invalid}")
-            print(f"  Disponibles : {TASKS_ALL}")
+            print(f"  Disponibles : {tasks_all}")
             sys.exit(1)
 
-    # Affiche le plan few-shot avant de commencer
     print(f"\n  Plan d'évaluation ({'few-shot industrie' if args.mode == 'pretrain' else '0-shot'}) :")
     for key in task_keys:
         _, n = task_map[key]
-        effective = args.num_fewshot if args.num_fewshot is not None else n
+        effective    = args.num_fewshot if args.num_fewshot is not None else n
         override_tag = "  ← override" if args.num_fewshot is not None else ""
         print(f"    {key:<20} {effective}-shot{override_tag}")
 
-    # ── Chargement modèle + tokenizer ────────────────────────
     print()
     tokenizer = load_tokenizer(args.mode)
     model     = load_model(args.model, device)
 
-    # ── Évaluation tâche par tâche ────────────────────────────
     scores  = {}
-    shots   = {}   # garde le n_shot effectif pour le JSON
+    shots   = {}
     t_start = time.time()
 
     for bench_key in task_keys:
@@ -486,11 +483,11 @@ def main():
 
         try:
             wrapper = NaylisLM(
-                model      = model,
-                tokenizer  = tokenizer,
-                device     = device,
-                batch_size = args.batch_size,
-                max_seq_len= MODEL_CFG["max_seq_len"],
+                model       = model,
+                tokenizer   = tokenizer,
+                device      = device,
+                batch_size  = args.batch_size,
+                max_seq_len = MODEL_CFG["max_seq_len"],
             )
 
             results = simple_evaluate(
@@ -534,7 +531,6 @@ def main():
 
     total_time = time.time() - t_start
 
-    # ── Récap final ───────────────────────────────────────────
     print("\n\n" + "="*65)
     print(f"  RÉSULTATS — mode {args.mode.upper()}")
     print("="*65)
@@ -558,17 +554,18 @@ def main():
     print(f"  Temps total  : {total_time/60:.1f} min")
     print("="*65)
 
-    # ── Sauvegarde JSON ───────────────────────────────────────
-    output = {
-        "mode"           : args.mode,
-        "model"          : args.model,
-        "tasks"          : task_keys,
-        "shots"          : shots,
-        "results"        : {k: round(v * 100, 2) for k, v in scores.items()},
-        "average_acc_pct": round(sum(scores.values()) / len(scores) * 100, 2) if scores else 0,
-        "total_time_s"   : round(total_time, 1),
+    output_data = {
+        "mode"            : args.mode,
+        "model"           : args.model,
+        "max_seq_len"     : MODEL_CFG["max_seq_len"],
+        "use_graph"       : MODEL_CFG["use_graph"],
+        "tasks"           : task_keys,
+        "shots"           : shots,
+        "results"         : {k: round(v * 100, 2) for k, v in scores.items()},
+        "average_acc_pct" : round(sum(scores.values()) / len(scores) * 100, 2) if scores else 0,
+        "total_time_s"    : round(total_time, 1),
     }
-    Path(args.output).write_text(json.dumps(output, indent=2, ensure_ascii=False))
+    Path(args.output).write_text(json.dumps(output_data, indent=2, ensure_ascii=False))
     print(f"\n  💾 Résultats sauvés : {args.output}")
 
 
