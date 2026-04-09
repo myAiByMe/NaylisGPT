@@ -74,7 +74,7 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 HF_DATASET_REPO        = "silyan/data_PoC"
 HF_MODEL_REPO          = "silyan/data_PoC"
 HF_TOKEN               = ARGS.HF_token          # ← valeur de l'arg, peut être None
-HF_TIMED_SAVE_EVERY_MIN = 60
+HF_TIMED_SAVE_EVERY_MIN = 50
 
 if HF_TOKEN is None:
     print('  ⚠️  Aucun token HF fourni (--HF_token). '
