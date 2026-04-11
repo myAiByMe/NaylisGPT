@@ -1,30 +1,19 @@
 #!/usr/bin/env python3
 """
-pretrain_fixed.py — GPT-Naylis v1 (fixed)
-==========================================
-Pretrain NaylisGPT sur Cosmopedia v2.
+pretrain_test.py — GPT-Naylis v1 (test init PyTorch defaults)
+========================
+Identique à pretrain.py SAUF : init des poids = PyTorch defaults (comme OLD)
+  - nn.Linear  → kaiming_uniform_ (a=sqrt(5))   [vs normal(0, 0.02) dans NEW]
+  - nn.Embedding → normal(0, std=1)              [vs normal(0, 0.02) dans NEW]
 
-FIX vs pretrain.py original :
-  - Muon LR fixé : lr_muon = lr × 5.0 dès l'init → pas de step "sans warmup"
-    (dans l'original, le 1er opt.step() utilisait lr_base sans ×5 car le
-     scheduler n'avait pas encore tourné)
-  - num_layers   : 12  (au lieu de 18)
-  - batch_size   : 32
-  - gradient_accumulation : 4  (batch effectif = 32 × 4 × 1024 = 131 072 tokens/step)
-  - max_seq_len  : 1024  (inchangé)
-
-STACK :
-  - Tokenizer   : cosmo2-tokenizer (vocab 49152)
-  - Attention   : NaylisAttention (SDPA/FA + graph bias asymétrique)
-  - Optimiseur  : Muon+MARS-M (blocs) + AdamW (embeddings, norms)
-  - Scheduler   : WSD (Warmup-Stable-Decay)
-  - Checkpoint  : sauvegarde atomique + reprise automatique
+OBJECTIF : tester si l'init PyTorch (OLD) explique les meilleurs résultats
+           du modèle 1B vs le modèle 8B (NEW init normal 0.02)
 
 USAGE :
-  python pretrain_fixed.py
-  python pretrain_fixed.py --no-compile
-  python pretrain_fixed.py --total-steps 45732
-  python pretrain_fixed.py --no_graph
+  python pretrain_test.py
+  python pretrain_test.py --no-compile
+  python pretrain_test.py --total-steps 45732
+  python pretrain_test.py --no_graph
 """
 
 import os
@@ -41,6 +30,7 @@ import traceback
 import argparse
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from functools import partial
@@ -86,8 +76,8 @@ CONFIG = {
     'vocab_size'            : None,
     'embed_dim'             : 768,
     'num_heads'             : 12,
-    'num_layers'            : 12,        # FIX : 12 au lieu de 18
-    'max_seq_len'           : 1024,      # inchangé
+    'num_layers'            : 18,
+    'max_seq_len'           : 1024,
     'dropout'               : 0.0,
     'use_rope'              : True,
     'use_yarn'              : False,
@@ -101,9 +91,9 @@ CONFIG = {
     'use_graph'             : not ARGS.no_graph,
     # Tokens spéciaux
     'use_token_special'     : False,
-    # Training — FIX : batch 32 × grad_acc 4 = 128 séq × 1024 = 131 072 tokens/step
+    # Training
     'batch_size'            : 32,
-    'gradient_accumulation' : 4,
+    'gradient_accumulation' : 8,
     'max_grad_norm'         : 1.0,
     'learning_rate'         : 3e-4,
     'weight_decay'          : 0.1,
@@ -120,8 +110,8 @@ CONFIG = {
     'validate_every_steps'  : 500,
     'val_batches'           : 50,
     'save_every_steps'      : 2000,
-    # Checkpoint
-    'checkpoint_file'       : './Model/naylis_fixed_pretrain.pt',
+    # Checkpoint séparé pour ne pas écraser le run principal
+    'checkpoint_file'       : './Model/naylis_test_oldinit.pt',
     # Compile
     'use_compile'           : not ARGS.no_compile,
     'compile_mode'          : ARGS.compile_mode,
@@ -131,7 +121,7 @@ CONFIG = {
 }
 
 print('=' * 70)
-print('  GPT-Naylis v1 — Pretrain FIXED')
+print('  GPT-Naylis v1 — TEST init PyTorch defaults (OLD behavior)')
 print('=' * 70)
 if DEVICE == 'cuda':
     print(f'  GPU  : {torch.cuda.get_device_name(0)}')
@@ -139,17 +129,16 @@ if DEVICE == 'cuda':
     cap = torch.cuda.get_device_capability()
     print(f'  SM   : {cap[0]}{cap[1]}')
 print(f'  embed={CONFIG["embed_dim"]}  layers={CONFIG["num_layers"]}  '
-      f'heads={CONFIG["num_heads"]}  kv={CONFIG["n_kv_heads"]}  rel_rank={CONFIG["rel_rank"]}')
-print(f'  batch_size={CONFIG["batch_size"]}  grad_acc={CONFIG["gradient_accumulation"]}  '
-      f'tokens/step={(CONFIG["batch_size"] * CONFIG["gradient_accumulation"] * CONFIG["max_seq_len"]):,}')
-print(f'  use_graph={CONFIG["use_graph"]}')
-print(f'  [FIX] Muon LR = lr × 5.0 initialisé directement (pas via scheduler)')
+      f'heads={CONFIG["num_heads"]}  kv={CONFIG["n_kv_heads"]}  rel_rank={CONFIG["rel_rank"]} '
+      f'batch_size={CONFIG["batch_size"]} gradient_acc={CONFIG["gradient_accumulation"]}  '
+      f'use_graph={CONFIG["use_graph"]}  token_special={CONFIG["use_token_special"]}')
+print('  ⚠️  INIT : PyTorch defaults (kaiming_uniform + embedding std=1) — test hypothèse OLD vs NEW')
 
 
 # ── Tokenizer ────────────────────────────────────────────────────────────────
 print('\nTokenizer...')
 tokenizer = AutoTokenizer.from_pretrained('HuggingFaceTB/cosmo2-tokenizer')
-print(f'  cosmo2-tokenizer : vocab={len(tokenizer)}')
+print(f'  cosmo2-tokenizer chargé : vocab de base={len(tokenizer)}')
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 EOS_ID = tokenizer.eos_token_id
@@ -159,14 +148,64 @@ SPECIAL_TOKENS = ['<think>', '</think>', '<code>', '</code>', '<o>', '</o>']
 if CONFIG['use_token_special']:
     added = tokenizer.add_special_tokens({'additional_special_tokens': SPECIAL_TOKENS})
     print(f'  {added} token(s) spéciaux ajoutés → vocab={len(tokenizer)}')
+    THINK_START_ID = tokenizer.convert_tokens_to_ids('<think>')
+    THINK_END_ID   = tokenizer.convert_tokens_to_ids('</think>')
+    CODE_START_ID  = tokenizer.convert_tokens_to_ids('<code>')
+    CODE_END_ID    = tokenizer.convert_tokens_to_ids('</code>')
+    OUT_START_ID   = tokenizer.convert_tokens_to_ids('<o>')
+    OUT_END_ID     = tokenizer.convert_tokens_to_ids('</o>')
+    print(f'  eos={EOS_ID}')
+    print(f'  <think>={THINK_START_ID}  </think>={THINK_END_ID}')
+    print(f'  <code>={CODE_START_ID}  </code>={CODE_END_ID}')
+    print(f'  <o>={OUT_START_ID}  </o>={OUT_END_ID}')
 else:
-    print(f'  vocab={len(tokenizer)}  eos={EOS_ID}  use_token_special=False')
+    THINK_START_ID = THINK_END_ID = None
+    CODE_START_ID  = CODE_END_ID  = None
+    OUT_START_ID   = OUT_END_ID   = None
+    print(f'  vocab={len(tokenizer)}  eos={EOS_ID}')
+    print(f'  use_token_special=False — aucun token spécial ajouté')
 
 CONFIG['vocab_size'] = len(tokenizer)
 
 
+# ── Init PyTorch defaults (comportement OLD) ──────────────────────────────────
+def reset_to_pytorch_defaults(model: nn.Module):
+    """
+    Réinitialise les poids avec les defaults PyTorch — comportement identique à OLD
+    (HessGpt.py sans self.apply(_init_weights)).
+
+    PyTorch defaults :
+      nn.Linear    → kaiming_uniform_(weight, a=sqrt(5))
+                     uniform_(bias, -1/sqrt(fan_in), 1/sqrt(fan_in))
+      nn.Embedding → normal_(weight, mean=0, std=1)   ← différence clé vs normal(0, 0.02)
+      RMSNorm/LN   → weight=1, bias=0 (déjà correct dans Naylis.py)
+    """
+    for module in model.modules():
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_uniform_(module.weight, a=math.sqrt(5))
+            if module.bias is not None:
+                fan_in, _ = nn.init._calculate_fan_in_and_fan_out(module.weight)
+                bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+                nn.init.uniform_(module.bias, -bound, bound)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight)   # std=1, comportement PyTorch default
+
+
+def log_init_stats(model: nn.Module):
+    """Affiche les stats d'init pour confirmer que l'init OLD est bien appliquée."""
+    raw = model._orig_mod if hasattr(model, '_orig_mod') else model
+    emb_std  = raw.token_embeddings.weight.std().item()
+    fc_std   = raw.blocks[0].ffn.gate_proj.weight.std().item()
+    attn_std = raw.blocks[0].attention.q_proj.weight.std().item()
+    print(f'  Init stats (doit ressembler à OLD si std embedding ≈ 1.0) :')
+    print(f'    embedding std    = {emb_std:.4f}  (OLD≈1.0 | NEW≈0.02)')
+    print(f'    gate_proj std    = {fc_std:.4f}  (OLD≈kaiming | NEW≈0.02)')
+    print(f'    q_proj std       = {attn_std:.4f}  (OLD≈kaiming | NEW≈0.02)')
+
+
 # ── Chunk scan ───────────────────────────────────────────────────────────────
 def scan_chunks(data_dir: str) -> list:
+    """Scanne data_dir et retourne tous les chunks disponibles, triés par ID."""
     available = []
     if not os.path.exists(data_dir):
         return available
@@ -211,15 +250,7 @@ TOTAL_STEPS = sum(steps_for_chunk(c['tokens']) for c in ALL_CHUNKS)
 print(f'  Total steps estimés (tous chunks) : {TOTAL_STEPS:,}')
 
 
-# ── WSD Scheduler ─────────────────────────────────────────────────────────────
 class WSDScheduler:
-    """
-    Warmup-Stable-Decay.
-
-    Note : le scheduler applique pg['lr'] = lr × 5 pour les groupes Muon.
-    Muon est initialisé avec lr_muon = lr × 5 directement → cohérence
-    entre le lr initial du 1er step et les steps suivants (fix v1).
-    """
     def __init__(self, optimizers, max_lr, total_steps,
                  warmup_ratio=0.03, decay_ratio=0.15, min_lr_ratio=0.1):
         self.optimizers   = optimizers if isinstance(optimizers, list) else [optimizers]
@@ -234,11 +265,6 @@ class WSDScheduler:
         self._resume_steps_done   = 0
 
     def set_resume_warmup(self, n: int):
-        """
-        Mini-warmup post-reprise.
-        Le LR remonte de 0 → LR_schedulé sur n steps pour absorber
-        l'écart gradient froid/momentum chaud sans vider les buffers.
-        """
         self._resume_warmup_steps = n
         self._resume_steps_done   = 0
 
@@ -263,8 +289,6 @@ class WSDScheduler:
             self._resume_steps_done += 1
         for opt in self.optimizers:
             for pg in opt.param_groups:
-                # FIX : Muon est déjà initialisé à lr×5
-                # → le scheduler suit la même progression ×5
                 pg['lr'] = lr * 5.0 if pg.get('is_muon', False) else lr
         return lr
 
@@ -397,8 +421,7 @@ class CheckpointManager:
         torch.save(cp, tmp_pt)
         os.replace(tmp_pt, self.path)
         os.replace(tmp_json, info_path)
-        print(f'  💾 SAVE  step={metadata["global_step"]:,}  '
-              f'chunk_idx={metadata["current_chunk_idx"]}  [{self.path}]')
+        print(f'  💾 SAVE  step={metadata["global_step"]:,}  chunk_idx={metadata["current_chunk_idx"]}  [{self.path}]')
 
     def load(self) -> Optional[dict]:
         if not os.path.exists(self.path):
@@ -416,7 +439,7 @@ class CheckpointManager:
                 reconstructed_idx = (old_epoch - 1) * chunks_per_epoch + old_cwi
                 info['current_chunk_idx'] = reconstructed_idx
                 info['chunk_start_step']  = info.get('chunk_start_step', 0)
-                print(f'  ⚠️  Ancien format → chunk_idx={reconstructed_idx}')
+                print(f'  ⚠️  Ancien format détecté → chunk_idx={reconstructed_idx}')
             for k in ('global_step', 'current_chunk_idx', 'total_training_time', 'chunk_start_step'):
                 cp[k] = info.get(k, 0)
         else:
@@ -495,14 +518,6 @@ class Muon(torch.optim.Optimizer):
 
 
 def configure_optimizers(model, lr: float, weight_decay: float, betas, eps):
-    """
-    FIX Muon LR :
-      lr_muon = lr × 5.0 est fixé dès l'init de l'optimiseur.
-      Le scheduler continue d'appliquer ×5 pour maintenir la cohérence
-      du warmup/decay, ce qui donne lr_muon_effective = lr_schedulé × 5.
-      Résultat : le 1er opt.step() utilise le même ratio LR que tous
-      les autres steps → pas de spike au step 0.
-    """
     EXCLUDE = {'token_embeddings.weight', 'output_head.weight'}
     muon_params, adamw_decay, adamw_nodecay = [], [], []
     for pn, p in model.named_parameters():
@@ -518,15 +533,13 @@ def configure_optimizers(model, lr: float, weight_decay: float, betas, eps):
         else:
             adamw_nodecay.append(p)
 
-    # FIX : lr_muon = lr × 5.0 initialisé directement
-    lr_muon = lr * 5.0
+    lr_muon  = lr * 5.0
     muon_opt = Muon(
         [{'params': muon_params, 'is_muon': True}],
         lr=lr_muon, momentum=0.95, nesterov=True,
         ns_steps=3, weight_decay=0.0, use_mars=True, mars_gamma=0.025,
     )
     muon_opt.param_groups[0]['is_muon'] = True
-
     adamw_opt = torch.optim.AdamW(
         [{'params': adamw_decay,   'weight_decay': weight_decay, 'is_muon': False},
          {'params': adamw_nodecay, 'weight_decay': 0.0,          'is_muon': False}],
@@ -534,7 +547,7 @@ def configure_optimizers(model, lr: float, weight_decay: float, betas, eps):
     )
     n_muon  = sum(p.numel() for p in muon_params)
     n_adamw = sum(p.numel() for p in adamw_decay + adamw_nodecay)
-    print(f'\n  Muon+MARS  : {n_muon / 1e6:.2f}M params  lr_init={lr_muon:.2e}  [FIX: ×5 dès init]')
+    print(f'\n  Muon+MARS  : {n_muon / 1e6:.2f}M params  lr={lr_muon:.2e}  (init ×5 dès step 0)')
     print(f'  AdamW      : {n_adamw / 1e6:.2f}M params  lr={lr:.2e}')
     return muon_opt, adamw_opt
 
@@ -573,7 +586,7 @@ def train_one_chunk(
     indices = indices[batches_done_in_chunk * CONFIG['batch_size']:].tolist()
 
     if is_resume and batches_done_in_chunk > 0:
-        print(f'  ↩️  Reprise : {batches_done_in_chunk} batches déjà faits '
+        print(f'  ↩️  Reprise : {batches_done_in_chunk} batches déjà faits dans ce chunk '
               f'({steps_done_in_chunk} steps), {len(indices)} samples restants')
 
     class IndexSampler(torch.utils.data.Sampler):
@@ -601,7 +614,8 @@ def train_one_chunk(
 
     total_batches = total_seqs // CONFIG['batch_size']
     print(f'  batches={total_batches:,}  restant={len(train_loader):,}  '
-          f'packing={"ON" if CONFIG["use_packing"] else "OFF"}')
+          f'packing={"ON" if CONFIG["use_packing"] else "OFF"}  '
+          f'token_special={"ON" if CONFIG["use_token_special"] else "OFF"}')
 
     model.train()
     ae  = (DEVICE == 'cuda')
@@ -610,6 +624,7 @@ def train_one_chunk(
     valid_batches = 0
     acc_steps     = 0
     t0            = time.time()
+    first_loss_logged = False
 
     pbar = tqdm(
         train_loader,
@@ -638,6 +653,14 @@ def train_one_chunk(
                     max_seqlen_k = int(max_sl) if max_sl is not None else None,
                 )
                 loss = loss / CONFIG['gradient_accumulation']
+
+            # ── Log loss initiale (step 0, batch 0) pour valider l'hypothèse ──
+            if not first_loss_logged and chunk_idx == 0 and global_step == 0:
+                raw_loss = loss.item() * CONFIG['gradient_accumulation']
+                pbar.write(f'\n  🔍 INIT LOSS (batch 0, step 0) = {raw_loss:.4f}  '
+                           f'ppl={math.exp(min(raw_loss, 10)):.2f}  '
+                           f'[OLD kaiming: attendu ~8-9 | NEW normal(0.02): attendu ~10.5+]')
+                first_loss_logged = True
 
             if torch.isnan(loss) or torch.isinf(loss):
                 acc_steps = 0
@@ -678,10 +701,10 @@ def train_one_chunk(
 
                 if global_step % CONFIG['save_every_steps'] == 0:
                     ckpt_mgr.save(model, optimizers, scheduler, {
-                        'global_step'        : global_step,
-                        'current_chunk_idx'  : chunk_idx,
+                        'global_step'      : global_step,
+                        'current_chunk_idx': chunk_idx,
                         'total_training_time': total_time + (time.time() - t0),
-                        'chunk_start_step'   : chunk_start_step,
+                        'chunk_start_step' : chunk_start_step,
                     })
 
                 if global_step % 1000 == 0 and CONFIG['use_graph']:
@@ -751,6 +774,14 @@ def main():
         rel_rank              = CONFIG['rel_rank'],
         use_graph             = CONFIG['use_graph'],
     )
+
+    # ── RESET INIT → PyTorch defaults (comportement OLD HessGpt.py) ──────────
+    # Naylis.__init__ a déjà appelé self.apply(_init_weights) → normal(0.02).
+    # On écrase ici avec kaiming_uniform_ (Linear) + normal(std=1) (Embedding).
+    print('\n  Réinitialisation → PyTorch defaults (kaiming + embedding std=1)...')
+    reset_to_pytorch_defaults(model)
+    log_init_stats(model)
+
     dtype = torch.bfloat16 if DEVICE == 'cuda' else torch.float32
     model = model.to(dtype).to(DEVICE)
 
@@ -817,7 +848,6 @@ def main():
         chunk_start_step  = cp.get('chunk_start_step', 0)
         print(f'  global_step={global_step:,}  chunk_idx={current_chunk_idx}  '
               f'total_time={total_time/3600:.2f}h')
-
         scheduler.set_resume_warmup(100)
         print(f'  Resume warmup : 100 steps (LR 0 → schedulé)')
 
@@ -830,7 +860,6 @@ def main():
     print('=' * 70)
 
     for chunk_idx, chunk_info in enumerate(ALL_CHUNKS):
-
         if chunk_idx < current_chunk_idx:
             print(f'  ⏩ chunk_{chunk_info["id"]:03d} (idx={chunk_idx}) — déjà traité, skip')
             continue
@@ -869,7 +898,7 @@ def main():
                 'total_training_time': total_time,
                 'chunk_start_step'   : chunk_start_step,
             })
-            print('  ✅ Sauvegarde OK — relancer pour reprendre')
+            print('  ✅ Sauvegarde OK — relancer le script pour reprendre')
             return
 
         except Exception:
